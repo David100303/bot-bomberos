@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import json
+import time
 
 # --- TUS DATOS DE TELEGRAM ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -32,52 +33,58 @@ if os.path.exists('memoria.json'):
 headers = {'User-Agent': 'Mozilla/5.0'}
 
 # ==========================================
-# 1. REVISAR EMERGENCIAS
+# BUCLE INTERNO (Revisa 4 veces, cada 60s)
 # ==========================================
-try:
-    resp = requests.get(URL_EMERGENCIAS, headers=headers, timeout=10)
-    soup = BeautifulSoup(resp.text, 'html.parser')
+for intento in range(4):
+    print(f"Iniciando escaneo {intento + 1}/4...")
     
-    for fila in soup.find_all('tr'):
-        texto_fila = fila.text.strip().upper()
-        es_cerca = any(lugar in texto_fila for lugar in UBICACIONES_CLAVE)
-        es_nuestra_unidad = any(unidad in texto_fila for unidad in UNIDADES_10)
+    # 1. REVISAR EMERGENCIAS
+    try:
+        resp = requests.get(URL_EMERGENCIAS, headers=headers, timeout=10)
+        soup = BeautifulSoup(resp.text, 'html.parser')
         
-        if es_cerca or es_nuestra_unidad:
-            id_emergencia = texto_fila[:20].replace(" ", "")
-            if id_emergencia not in memoria['emergencias']:
-                motivo = "🚨 EMERGENCIA CERCANA" if es_cerca else "🚒 SALVADORA 10 DESPACHADA"
-                enviar_telegram(f"{motivo}\n\nDetalle:\n{texto_fila}")
-                memoria['emergencias'].append(id_emergencia)
-except Exception as e:
-    print(f"Error consultando emergencias: {e}")
+        for fila in soup.find_all('tr'):
+            texto_fila = fila.text.strip().upper()
+            es_cerca = any(lugar in texto_fila for lugar in UBICACIONES_CLAVE)
+            es_nuestra_unidad = any(unidad in texto_fila for unidad in UNIDADES_10)
+            
+            if es_cerca or es_nuestra_unidad:
+                id_emergencia = texto_fila[:20].replace(" ", "")
+                if id_emergencia not in memoria['emergencias']:
+                    motivo = "🚨 EMERGENCIA CERCANA" if es_cerca else "🚒 SALVADORA 10 DESPACHADA"
+                    enviar_telegram(f"{motivo}\n\nDetalle:\n{texto_fila}")
+                    memoria['emergencias'].append(id_emergencia)
+    except Exception as e:
+        print(f"Error consultando emergencias: {e}")
 
-# ==========================================
-# 2. REVISAR UNIDADES
-# ==========================================
-try:
-    resp_u = requests.get(URL_UNIDADES, headers=headers, timeout=10)
-    soup_u = BeautifulSoup(resp_u.text, 'html.parser')
-    
-    for fila in soup_u.find_all('tr'):
-        cols = fila.find_all('td')
-        if len(cols) > 2:
-            nombre = cols[0].text.strip().upper()
-            if nombre in UNIDADES_10:
-                estado_actual = cols[2].text.strip().upper()
-                estado_anterior = memoria['unidades'].get(nombre, "DESCONOCIDO")
-                
-                if estado_actual != estado_anterior and estado_anterior != "DESCONOCIDO":
-                    icono = "🟢" if "SERVICIO" in estado_actual else ("🔴" if "EMERGENCIA" in estado_actual else "🟡")
-                    enviar_telegram(f"🔄 CAMBIO DE ESTADO: {nombre}\n{icono} Nuevo: {estado_actual}")
-                
-                memoria['unidades'][nombre] = estado_actual
-except Exception as e:
-    print(f"Error consultando unidades: {e}")
+    # 2. REVISAR UNIDADES
+    try:
+        resp_u = requests.get(URL_UNIDADES, headers=headers, timeout=10)
+        soup_u = BeautifulSoup(resp_u.text, 'html.parser')
+        
+        for fila in soup_u.find_all('tr'):
+            cols = fila.find_all('td')
+            if len(cols) > 2:
+                nombre = cols[0].text.strip().upper()
+                if nombre in UNIDADES_10:
+                    estado_actual = cols[2].text.strip().upper()
+                    estado_anterior = memoria['unidades'].get(nombre, "DESCONOCIDO")
+                    
+                    if estado_actual != estado_anterior and estado_anterior != "DESCONOCIDO":
+                        icono = "🟢" if "SERVICIO" in estado_actual else ("🔴" if "EMERGENCIA" in estado_actual else "🟡")
+                        enviar_telegram(f"🔄 CAMBIO DE ESTADO: {nombre}\n{icono} Nuevo: {estado_actual}")
+                    
+                    memoria['unidades'][nombre] = estado_actual
+    except Exception as e:
+        print(f"Error consultando unidades: {e}")
+
+    # Esperar 60 segundos antes del siguiente escaneo interno (excepto en la última vuelta)
+    if intento < 3:
+        time.sleep(60)
 
 # Limpiamos el historial viejo para no saturar el JSON
 memoria['emergencias'] = memoria['emergencias'][-50:]
 
-# --- GUARDAR MEMORIA DE ESTADO ---
+# --- GUARDAR MEMORIA DE ESTADO AL FINALIZAR LOS 4 CICLOS ---
 with open('memoria.json', 'w', encoding='utf-8') as f:
     json.dump(memoria, f, indent=4)
