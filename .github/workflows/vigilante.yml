@@ -1,0 +1,34 @@
+name: Vigilante Bomberos 10
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' 
+  workflow_dispatch: 
+
+jobs:
+  monitorear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar el entorno Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar librerías
+        run: pip install requests beautifulsoup4
+
+      - name: Ejecutar la revisión web
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bomberos.py
+
+      - name: Actualizar la memoria del bot
+        run: |
+          git config --global user.name "bot-vigilante[bot]"
+          git config --global user.email "bot-vigilante[bot]@users.noreply.github.com"
+          git add memoria.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Actualiza estado de emergencias" && git push)
