@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import os
 import json
 import time
+import re # <-- Nueva librería para precisión exacta de texto
 
 # --- TUS DATOS DE TELEGRAM ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -13,6 +14,9 @@ URL_UNIDADES = "https://www.bomberosperu.gob.pe/sgo/ceem/SGO_CEEM_CDVehiculos.as
 
 UNIDADES_10 = ["B-10", "AMB-10", "RES-10", "ESC-10", "AUX-10", "M10-1"]
 UBICACIONES_CLAVE = ["CERCADO DE LIMA", "AV. TACNA", "JR. DE LA UNION", "PLAZA SAN MARTIN"]
+
+# Expresión regular para buscar exactamente tus unidades (evita cruces con B-100 o B-105)
+patron_unidades = re.compile(r'\b(?:' + '|'.join(UNIDADES_10) + r')\b')
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -38,26 +42,32 @@ headers = {'User-Agent': 'Mozilla/5.0'}
 for intento in range(4):
     print(f"Iniciando escaneo {intento + 1}/4...")
     
-    # 1. REVISAR EMERGENCIAS
+    # 1. REVISAR EMERGENCIAS (Página Principal)
     try:
         resp = requests.get(URL_EMERGENCIAS, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
         for fila in soup.find_all('tr'):
             texto_fila = fila.text.strip().upper()
+            
+            # --- NUEVA REGLA: Ignorar incidentes cerrados ---
+            if "CERRADO" in texto_fila:
+                continue
+            
             es_cerca = any(lugar in texto_fila for lugar in UBICACIONES_CLAVE)
-            es_nuestra_unidad = any(unidad in texto_fila for unidad in UNIDADES_10)
+            # Usamos Regex para buscar coincidencias exactas (solo B-10, no B-100)
+            es_nuestra_unidad = bool(patron_unidades.search(texto_fila))
             
             if es_cerca or es_nuestra_unidad:
                 id_emergencia = texto_fila[:20].replace(" ", "")
                 if id_emergencia not in memoria['emergencias']:
-                    motivo = "🚨 EMERGENCIA CERCANA" if es_cerca else "🚒 SALVADORA 10 DESPACHADA"
+                    motivo = "🚨 EMERGENCIA CERCANA ACTIVA" if es_cerca else "🚒 SALVADORA 10 DESPACHADA"
                     enviar_telegram(f"{motivo}\n\nDetalle:\n{texto_fila}")
                     memoria['emergencias'].append(id_emergencia)
     except Exception as e:
         print(f"Error consultando emergencias: {e}")
 
-    # 2. REVISAR UNIDADES
+    # 2. REVISAR ESTADO DE VEHÍCULOS (Cambios de servicio)
     try:
         resp_u = requests.get(URL_UNIDADES, headers=headers, timeout=10)
         soup_u = BeautifulSoup(resp_u.text, 'html.parser')
@@ -65,6 +75,7 @@ for intento in range(4):
         for fila in soup_u.find_all('tr'):
             cols = fila.find_all('td')
             if len(cols) > 2:
+                # Aquí la comparación ya es exacta por celda de tabla
                 nombre = cols[0].text.strip().upper()
                 if nombre in UNIDADES_10:
                     estado_actual = cols[2].text.strip().upper()
@@ -78,13 +89,13 @@ for intento in range(4):
     except Exception as e:
         print(f"Error consultando unidades: {e}")
 
-    # Esperar 60 segundos antes del siguiente escaneo interno (excepto en la última vuelta)
+    # Pausa de 60 segundos entre escaneos
     if intento < 3:
         time.sleep(60)
 
-# Limpiamos el historial viejo para no saturar el JSON
+# Limpiamos el historial viejo para mantener el JSON ligero
 memoria['emergencias'] = memoria['emergencias'][-50:]
 
-# --- GUARDAR MEMORIA DE ESTADO AL FINALIZAR LOS 4 CICLOS ---
+# --- GUARDAR MEMORIA DE ESTADO AL FINALIZAR ---
 with open('memoria.json', 'w', encoding='utf-8') as f:
     json.dump(memoria, f, indent=4)
